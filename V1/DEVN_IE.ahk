@@ -2,7 +2,6 @@
 ;--------------------------------------------------------------------
 ; varibles globales usadas en las funciones
 ;--------------------------------------------------------------------
-GLOBAL DEVN_Load := false
 GLOBAL DEVN_Reintentos := 20
 GLOBAL DEVN_TiempoReintentos := 500
 
@@ -14,19 +13,17 @@ GLOBAL DEVN_TiempoReintentos := 500
 ; que el objeto que devuelve no es el correcto.
 ; para mÃ¡s info: https://www.autohotkey.com/boards/viewtopic.php?t=21044
 ;--------------------------------------------------------------------
-DEVN_IE(medium:=false){
+DEVN_IE(medium:=true){
+	local pwb := ""
+	local hwndwb := ""
 	if(medium)
-		return ComObjCreate("{D5E8041D-920F-45e9-B8FB-B1DEB82C6E5E}")
-	return ComObjCreate("InternetExplorer.Application")
+		pwb:= ComObjCreate("{D5E8041D-920F-45e9-B8FB-B1DEB82C6E5E}")
+	else pwb:=ComObjCreate("InternetExplorer.Application")
+	pwb.visible:=true
+	hwndwb := pwb.hwnd
+	WinMaximize ahk_id %hwndwb% 
+	return pwb
 }            
-
-;--------------------------------------------------------------------
-; Eventos del IE tratados por la libreria
-; Actualmente sÃ³lo el evento de la carga completa de documentos.
-;--------------------------------------------------------------------
-DEVN_EVENT_DocumentComplete() { 
-	DEVN_Load := false	
-}
 
 ;--------------------------------------------------------------------
 ; Se usa para esperar que aparezca una pÃ¡gina en concreto de entre varias
@@ -42,7 +39,7 @@ DEVN_EVENT_DocumentComplete() {
 DEVN_esperaPag(wb, des, msg:=true)
 {
 	Local vueltas := 0
-	Local pag := ""
+	Local nodo := ""
 	local i := 0
 	Loop
 	{
@@ -56,14 +53,8 @@ DEVN_esperaPag(wb, des, msg:=true)
 		
 		for i in des
 		{
-			try pag := DEVN_WBNodo(wb, des[i,1], des[i,2], des[i,3], (des.lengh = 4 and des[i,4]) )
-			/*
-			if(des.lengh = 4 and des[i,4])
-				try pag := DEVN_WBNodo(wb, des[i,1], des[i,2], des[i,3], des[i,4])
-			else
-				try pag := DEVN_WBNodo(wb, des[i,1], des[i,2], des[i,3])
-			*/
-			if(pag != "")
+			try nodo := DEVN_WBNodo(wb, des[i,1], des[i,2], des[i,3], des[i,4],des[i,5])
+			if(nodo != "")
 				return i
 		}
 		vueltas+=1
@@ -92,23 +83,16 @@ DEVN_MsgError(wb, des){
 
 ;--------------------------------------------------------------------
 ; hace click en un elemento y espera que el navegador finalize al carga
-; retorna el propio control o "" en caso de error.
+; retorna wb control o "" en caso de error.
 ;--------------------------------------------------------------------
-DEVN_Click(wb, ctrl){
-	ComObjConnect(wb, "DEVN_EVENT_") 
-	DEVN_Load := true
+DEVN_Click(wb,atributo, tag, texto, parcial:=false, framepath:=""){
 	try{
-		ctrl.click() ; intento pinchar en el, si falla retorno
+		DEVN_WBNodo(wb,atributo, tag, texto, parcial, framepath).click()
 	}
 	catch{
-		DEVN_Load := false
-		ComObjConnect(wb, "")
 		return ""
 	} 
-	while DEVN_Load
-		Sleep 200
-	ComObjConnect(wb, "")
-	return ctrl
+	return DEVN_IE_DocumentoCompleto(wb)
 }
 
 ;--------------------------------------------------------------------
@@ -116,20 +100,25 @@ DEVN_Click(wb, ctrl){
 ; retorna el propio IE o "" en caso de error.
 ;--------------------------------------------------------------------
 DEVN_Navegar(wb, pagina){
-	ComObjConnect(wb, "DEVN_EVENT_") 
-	DEVN_Load := true
 	try{
 		wb.Navigate(pagina) ; intento pinchar en el, si falla retorno
 	}
 	catch{
-		DEVN_Load := false
-		ComObjConnect(wb, "")
 		return ""
 	} 
-	while DEVN_Load
-		Sleep 200
-	ComObjConnect(wb, "")
-	return wb
+	return DEVN_IE_DocumentoCompleto(wb)
+}
+
+;--------------------------------------------------------------------
+; Busca un frame por el nombre
+; Esto en HTML5 está obsoleto pero se sigue usando... así que....
+;--------------------------------------------------------------------
+DEVN_FramePorNombre(nodoRaiz,nombreFrame)
+{
+	Loop % (t := nodoRaiz.frames).length
+		if(t[A_Index-1].name = nombreFrame) 
+			return t[A_Index-1].document
+	return ""
 }
 
 ;--------------------------------------------------------------------
@@ -137,15 +126,25 @@ DEVN_Navegar(wb, pagina){
 ; Devuelve un elemento del document o "" para indicar null.
 ; Si el atributo buscado es el ID no es necesario poner el tag, ya que buscara usando 
 ; document.getElementByID() en vez de getElementsByTagName
+; He añadido un array con el FramePath para poder cambiar el nodoRaiz para localizar.
+; TODO: PONER NODO RAIZ
+; TODO: HACER QUE EL FRAMEPATH SEA POR ID, NUMERO O NOMBRE.
 ;--------------------------------------------------------------------
-DEVN_WBNodo(wb, atributo, tag, texto, parcial:=false)
+DEVN_WBNodo(wb, atributo, tag, texto, parcial:=false, framepath:="")
 {
+	Local nodoRaiz := wb.document
 	local t:=[]
+	loop % framepath.length()
+	{
+		nodoRaiz := DEVN_FramePorNombre(nodoRaiz,framepath[A_Index])
+		if(nodoRaiz = "") ; no se ha encontrado el Frame
+			return ""
+	}
 	if(format("{:U}",atributo) = "ID")
-		return wb.Document.getElementByID(texto)
-	Loop % (t := wb.Document.getElementsByTagName(tag)).length
+		return nodoRaiz.getElementByID(texto)
+	Loop % (t := nodoRaiz.getElementsByTagName(tag)).length
 		if(parcial){
-			if(InStr(t[A_Index-1].getAttribute(busq) , texto) > 0)
+			if(InStr(t[A_Index-1].getAttribute(atributo) , texto))
 				Return t[A_Index-1]
 		}else if(t[A_Index-1].getAttribute(atributo) = texto)
 					Return t[A_Index-1]
@@ -156,7 +155,7 @@ DEVN_WBNodo(wb, atributo, tag, texto, parcial:=false)
 ; Busca una lengueta en el IEXPLORE.EXE por defecto
 ; usando el path
 ;--------------------------------------------------------------------
-DEVN_IE_BuscarPagURL(texto, prg:="IEXPLORE.EXE")
+DEVN_IE_BuscarPagURL(texto, prg:="IEXPLORE")
 {
 	local pwb:=""
 	for pwb in ComObjCreate("Shell.Application").Windows
@@ -166,4 +165,21 @@ DEVN_IE_BuscarPagURL(texto, prg:="IEXPLORE.EXE")
 				return pwb
 	}
 	return ""
+}
+
+;-------------------------------------------------------------------------
+; control de fin de carga
+;-------------------------------------------------------------------------
+DEVN_IE_DocumentoCompleto(wb){
+	loop{
+		try{
+			while(wb.readyState != 4 && wb.document.readyState != "complete" && wb.busy && A_Index < 150){
+				Sleep 100
+			}
+			if(A_Index = 150)
+				return ""
+			return wb
+		}
+		sleep 100
+	}
 }
